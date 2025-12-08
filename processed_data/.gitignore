@@ -4,3 +4,5 @@
 *.npy
 # Ignore .idea folder
 .idea/
+# Ignore .env file
+.env
