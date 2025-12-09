@@ -1,8 +1,0 @@
-# Ignore parquet files
-*.parquet
-# Ignore npy files
-*.npy
-# Ignore .idea folder
-.idea/
-# Ignore .env file
-.env

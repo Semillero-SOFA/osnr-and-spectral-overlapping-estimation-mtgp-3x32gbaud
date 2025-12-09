@@ -33,8 +33,10 @@ def load_dataset(data_path="processed_data", test_size=0.2, seed=42):
     # Targets Processing
     # Column 0: Spacing (Continuous) -> Overlap (Binary)
     # Threshold: <= 35.2 is Overlap (1), > 35.2 is No Overlap (0)
+    BANDWIDTH = 32 # GHz
+    ROLLOFF_FACTOR = 0.1
     spacing = Y[:, 0]
-    y_overlap = (spacing <= 35.2).astype(float)
+    y_overlap = (spacing <= BANDWIDTH * (1 + ROLLOFF_FACTOR)).astype(float)
 
     # Column 1: OSNR (Continuous)
     y_osnr = Y[:, 1]

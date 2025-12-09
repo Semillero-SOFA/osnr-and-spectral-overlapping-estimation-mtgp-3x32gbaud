@@ -13,6 +13,8 @@ class MixedGPModel(gpytorch.models.ApproximateGP):
             num_tasks: Number of output tasks (default: 2)
         """
         # Variational distribution for latent functions
+        # We use Cholesky Variational Distribution to have a full covariance matrix in the
+        # multivariate normal distribution
         variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
             inducing_points.size(0), batch_shape=torch.Size([num_latents])
         )
@@ -41,7 +43,7 @@ class MixedGPModel(gpytorch.models.ApproximateGP):
         )
 
         # Composite Kernel: RBF + Matern + Periodic
-        # Matches teacher's implementation structure but adapted for LMC (batch_shape)
+        # Uses teacher suggestion for kernel
         self.covar_module = (
             gpytorch.kernels.ScaleKernel(
                 gpytorch.kernels.RBFKernel(batch_shape=torch.Size([num_latents])),
