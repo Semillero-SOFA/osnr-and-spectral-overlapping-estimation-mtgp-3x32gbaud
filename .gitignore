@@ -41,6 +41,7 @@ venv.bak/
 checkpoints/
 results/
 processed_data/
+data/
 *.parquet
 *.npy
 *.log
