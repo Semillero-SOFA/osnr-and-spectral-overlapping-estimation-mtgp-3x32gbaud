@@ -55,3 +55,4 @@ agent/
 
 # Output configurations
 configs/
+*.png
