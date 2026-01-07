@@ -1,7 +1,7 @@
 [project]
 name = "osnr-and-spectral-overlapping-estimation-mogp-3x32gbaud"
 version = "0.1.0"
-description = "Add your description here"
+description = "Graduation work for telecommunications engineering in University of Antioquia"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
