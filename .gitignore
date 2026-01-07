@@ -42,7 +42,7 @@ venv.bak/
 *.swo
 
 # Project Specific
-checkpoints/
+artifacts/
 results/
 processed_data/
 data/
