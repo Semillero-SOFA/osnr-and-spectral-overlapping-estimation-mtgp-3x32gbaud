@@ -35,7 +35,7 @@ Processed data and artifacts:
 - `artifacts/multitask_gp_checkpoint.pt` (saved checkpoint containing model and preprocessing stats)
 
 ## 📑 Final Report
-Final report for the project can be found in the university repository in the following [link](www.google.com).
+Final report for the project can be found in the university repository in the following [link](https://bibliotecadigital.udea.edu.co/workflowitems/66444/view).
 
 ## 🤝 Acknowledgments
 I thank the instructors and colleagues who supported this project. Special thanks to the Semillero de Óptica y Fotónica Aplicada (SOFA) and Grupo de Investigación en Telecomunicaciones Aplicadas (GITA) for providing the dataset and domain guidance.
