@@ -305,12 +305,16 @@ def _(
             spacing_means.append(np.mean(abs_errors_spacing[mask]))
             spacing_stds.append(np.std(abs_errors_spacing[mask]))
             
+        import matplotlib.ticker as ticker
+        
         fig1, ax1 = plt.subplots(figsize=(7, 4))
         ax1.errorbar(unique_spacing, spacing_means, yerr=spacing_stds, fmt='o-', capsize=4, mfc='white')
         ax1.set_xlabel('Spectral Spacing (GHz)')
         ax1.set_ylabel('MAE ± STD')
         ax1.set_title(f'Precision by Spacing ({dataset_name.upper()})')
-        ax1.grid(True, alpha=0.3)
+        ax1.grid(True, which='both', alpha=0.3)
+        ax1.yaxis.set_major_locator(ticker.MultipleLocator(0.5))
+        ax1.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
         fig1.tight_layout()
         ui_ax1 = mo.ui.matplotlib(ax1)
         
@@ -340,7 +344,9 @@ def _(
         ax2.set_xlabel('OSNR (dB) [Binned]')
         ax2.set_ylabel('MAE ± STD')
         ax2.set_title(f'Precision by OSNR ({dataset_name.upper()})')
-        ax2.grid(True, alpha=0.3)
+        ax2.grid(True, which='both', alpha=0.3)
+        ax2.yaxis.set_major_locator(ticker.MultipleLocator(0.5))
+        ax2.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
         fig2.tight_layout()
         ui_ax2 = mo.ui.matplotlib(ax2)
         
