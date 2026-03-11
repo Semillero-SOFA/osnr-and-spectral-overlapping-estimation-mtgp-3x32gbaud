@@ -1,5 +1,5 @@
 [project]
-name = "osnr-and-spectral-overlapping-estimation-mogp-3x32gbaud"
+name = "osnr-and-spectral-overlapping-estimation-mtgp-3x32gbaud"
 version = "1.0.0"
 description = "Multitask Gaussian Processes for Nyquist-WDM OSNR and Spectral Overlapping Estimation"
 readme = "README.md"
@@ -8,11 +8,13 @@ dependencies = [
     "gpytorch>=1.15.2",
     "marimo>=0.20.4",
     "matplotlib>=3.10.8",
-    "numpy>=2.4.0",
-    "pandas>=2.3.3",
-    "pyarrow>=22.0.0",
-    "pyzmq>=27.1.0",
-    "scikit-learn>=1.8.0",
-    "torch>=2.10.0",
-    "tqdm>=4.67.3",
+    "numpy>=2.1.0",
+    "pandas>=2.2.0",
+    "pyarrow>=17.0.0",
+    "pyzmq>=26.0.0",
+    "scikit-learn>=1.5.0",
+    "torch>=2.1.0",
+    "tqdm>=4.66.0",
+    "gdown>=5.0.0",
+    "python-dotenv>=1.0.0",
 ]
