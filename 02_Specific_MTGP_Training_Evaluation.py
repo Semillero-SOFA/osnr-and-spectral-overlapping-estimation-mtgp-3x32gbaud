@@ -48,6 +48,7 @@ def _():
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import train_test_split
     import marimo as mo
+    import seaborn as sns
 
     return (
         Path,
@@ -56,6 +57,7 @@ def _():
         mo,
         np,
         plt,
+        sns,
         ticker,
         torch,
         tqdm,
@@ -304,55 +306,60 @@ def _(
         return mo.hstack([ui_ax1, ui_ax2], justify="center")
 
     def plot_binned_metrics(y_act, y_pred, title_suffix):
-        # 1. Spacing (discrete)
+        import pandas as pd
+        
+        # 1. Spacing (discrete -> direct absolute errors)
         y_true_spacing = y_act[:, 0]
         y_pred_spacing = y_pred[:, 0]
         abs_errors_spacing = np.abs(y_pred_spacing - y_true_spacing)
 
-        unique_spacing = np.unique(y_true_spacing)
-        spacing_means = []
-        spacing_stds = []
-        for val in unique_spacing:
-            mask = np.isclose(y_true_spacing, val)
-            spacing_means.append(np.mean(abs_errors_spacing[mask]))
-            spacing_stds.append(np.std(abs_errors_spacing[mask]))
+        df_spacing = pd.DataFrame({
+            'Spectral Spacing (GHz)': y_true_spacing,
+            'Absolute Error': abs_errors_spacing
+        })
 
         fig1, ax1 = plt.subplots(figsize=(7, 4))
-        ax1.errorbar(unique_spacing, spacing_means, yerr=spacing_stds, fmt='o', capsize=4, mfc='white')
-        ax1.set_xlabel('Spectral Spacing (GHz)')
-        ax1.set_ylabel('MAE ± STD')
-        ax1.grid(True, which='both', alpha=0.3)
+        sns.boxplot(data=df_spacing, x='Spectral Spacing (GHz)', y='Absolute Error', color='white', width=0.5, ax=ax1, showfliers=False)
+        sns.stripplot(data=df_spacing, x='Spectral Spacing (GHz)', y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax1)
+        ax1.set_ylabel('Absolute Error')
+        ax1.grid(True, which='both', alpha=0.3, axis='y')
         ax1.yaxis.set_major_locator(ticker.MultipleLocator(0.5))
         ax1.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
         fig1.tight_layout()
         ui_ax1 = mo.ui.matplotlib(ax1)
 
-        # 2. OSNR (continuous -> binned)
+        # 2. OSNR (continuous -> binned labels for seaborn)
         y_true_osnr = y_act[:, 1]
         y_pred_osnr = y_pred[:, 1]
         abs_errors_osnr = np.abs(y_true_osnr - y_pred_osnr)
 
         num_bins = 10
         bins = np.linspace(np.min(y_true_osnr), np.max(y_true_osnr), num_bins + 1)
+        # Create string labels for the bins reflecting their center, formatted to 1 decimal place
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+        bin_labels = [f"{c:.1f}" for c in bin_centers]
+        
+        # Digitize returns indices 1 to len(bins)-1. Subtract 1 for 0-based.
         indices = np.digitize(y_true_osnr, bins) - 1
         indices = np.clip(indices, 0, num_bins - 1)
+        
+        # Map indices to their corresponding center label
+        osnr_bin_labels = [bin_labels[i] for i in indices]
 
-        bin_centers = (bins[:-1] + bins[1:]) / 2
-        osnr_means = []
-        osnr_stds = []
-        valid_centers = []
-        for b in range(num_bins):
-            mask = (indices == b)
-            if np.any(mask):
-                osnr_means.append(np.mean(abs_errors_osnr[mask]))
-                osnr_stds.append(np.std(abs_errors_osnr[mask]))
-                valid_centers.append(bin_centers[b])
+        df_osnr = pd.DataFrame({
+            'OSNR (dB)': osnr_bin_labels,
+            'Absolute Error': abs_errors_osnr
+        })
+
+        # Sort the dataframe by the numeric value of the bins to keep them ordered on x-axis
+        df_osnr['sort_key'] = df_osnr['OSNR (dB)'].astype(float)
+        df_osnr = df_osnr.sort_values('sort_key').drop('sort_key', axis=1)
 
         fig2, ax2 = plt.subplots(figsize=(7, 4))
-        ax2.errorbar(valid_centers, osnr_means, yerr=osnr_stds, fmt='s', capsize=4, mfc='white')
-        ax2.set_xlabel('OSNR (dB)')
-        ax2.set_ylabel('MAE ± STD')
-        ax2.grid(True, which='both', alpha=0.3)
+        sns.boxplot(data=df_osnr, x='OSNR (dB)', y='Absolute Error', color='white', width=0.5, ax=ax2, showfliers=False)
+        sns.stripplot(data=df_osnr, x='OSNR (dB)', y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax2)
+        ax2.set_ylabel('Absolute Error')
+        ax2.grid(True, which='both', alpha=0.3, axis='y')
         ax2.yaxis.set_major_locator(ticker.MultipleLocator(0.5))
         ax2.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
         fig2.tight_layout()
