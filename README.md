@@ -30,6 +30,7 @@ pip install .
 - `01_CountingVectorsFeatures.py` — extract features from CSV files and save to `processed_data/`.
 - `02_MTGP_Training_Evaluation.py` — load features, train the general MTGP model, save checkpoint to `artifacts/`, and evaluate all data with granular precision plots.
 - `02_Specific_MTGP_Training_Evaluation.py` — filter by Distance and Power, train independent scenario models, and compare them side-by-side.
+- `02_General_GP_Training_Evaluation.py` — evaluate independent Gaussian Processes per output, dynamically appending True target variables.
 
 Processed data and artifacts:
 - `processed_data/fcm/X_features.npy`, `processed_data/fcm/Y_targets.npy`, `processed_data/fcm/M_metadata.npy`
