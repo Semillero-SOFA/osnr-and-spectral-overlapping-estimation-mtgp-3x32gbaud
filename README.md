@@ -9,8 +9,8 @@ This project develops a multi-task Gaussian Process (MTGP) solution to jointly p
 
 ### Key elements
 
-- Two-stage, notebook-designed pipeline: (1) probabilistic feature extraction from raw I/Q symbols via adaptive KDE; (2) MTGP model training and evaluation using GPyTorch.
-- Feature extraction converts 10k symbol batches into 20-dimensional topological feature vectors (I & Q components: bandwidth, 4 peaks, 3 valleys each, for each component).
+- Two-stage, notebook-designed pipeline: (1) probabilistic feature extraction from raw I/Q symbols; (2) MTGP model training and evaluation using GPyTorch.
+- Feature extraction converts scenario batches into 16-dimensional topological feature vectors (Counting Vectors).
 - Modeling uses a multitask GP (LMC-style covariance / MultitaskKernel) and computes calibrated predictive intervals for both outputs.
 
 For implementation details and mathematical derivations, see the notebooks in the repository root.
@@ -23,19 +23,17 @@ For implementation details and mathematical derivations, see the notebooks in th
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install .
 ```
 
 2. Run the notebooks in order:
-- `01_ProbabilisticFeatures.ipynb` — extract features and save to `processed_data/`.
-- `02_MOGP_Training_Evaluation.ipynb` — load features, train the MOGP model, save checkpoint to `artifacts/`, and evaluate.
+- `01_CountingVectorsFeatures.py` — extract features from CSV files and save to `processed_data/`.
+- `02_MTGP_Training_Evaluation.py` — load features, train the general MTGP model, save checkpoint to `artifacts/`, and evaluate all data with granular precision plots.
+- `02_Specific_MTGP_Training_Evaluation.py` — filter by Distance and Power, train independent scenario models, and compare them side-by-side.
 
 Processed data and artifacts:
-- `processed_data/X_features.npy`, `processed_data/Y_targets.npy`, `processed_data/M_metadata.npy`
-- `artifacts/multitask_gp_checkpoint.pt` (saved checkpoint containing model and preprocessing stats)
-
-## 📑 Final Report
-Final report for the project can be found in the university repository in the following [link](https://bibliotecadigital.udea.edu.co/workflowitems/66444/view).
+- `processed_data/fcm/X_features.npy`, `processed_data/fcm/Y_targets.npy`, `processed_data/fcm/M_metadata.npy`
+- `artifacts/multitask_gp_fcm.pt` (saved checkpoint containing model and preprocessing stats)
 
 ## 🤝 Acknowledgments
 I thank the instructors and colleagues who supported this project. Special thanks to the Semillero de Óptica y Fotónica Aplicada (SOFA) and Grupo de Investigación en Telecomunicaciones Aplicadas (GITA) for providing the dataset and domain guidance.
