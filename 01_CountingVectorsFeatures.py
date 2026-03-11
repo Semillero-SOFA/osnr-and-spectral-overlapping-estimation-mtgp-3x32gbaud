@@ -1,12 +1,12 @@
 # /// script
-# requires-python = ">=3.13"
+# requires-python = ">=3.12"
 # dependencies = [
-#     "gdown>=5.2.1",
-#     "marimo>=0.20.2",
-#     "numpy>=2.4.3",
-#     "pandas>=3.0.1",
-#     "python-dotenv>=1.2.2",
-#     "pyzmq>=27.1.0",
+#     "gdown>=5.0.0",
+#     "marimo>=0.20.4",
+#     "numpy>=2.1.0",
+#     "pandas>=2.2.0",
+#     "python-dotenv>=1.0.0",
+#     "pyzmq>=26.0.0",
 # ]
 # ///
 
@@ -119,7 +119,7 @@ def _(mo):
     mo.md(r"""
     ## Data Preparation
 
-    In this step we extract the three arrays required by the downstream MOGP model:
+    In this step we extract the three arrays required by the downstream MTGP model:
 
     - **`X_features`** — shape `(N, 16)` — the 16 counting-vector probabilities.
     - **`Y_targets`** — shape `(N, 2)` — the regression targets: `[Spacing, OSNR]`.
@@ -181,11 +181,6 @@ def _(M_fcm, M_gkm, X_fcm, X_gkm, Y_fcm, Y_gkm, np, os):
     save_arrays(X_gkm, Y_gkm, M_gkm, "processed_data/gkm")
 
     print("\nAll datasets saved successfully.")
-    return
-
-
-@app.cell
-def _():
     return
 
 
