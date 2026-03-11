@@ -131,7 +131,7 @@ def _(np, torch):
     np.random.seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    return SEED, device
+    return (device,)
 
 
 @app.cell(hide_code=True)
@@ -145,15 +145,7 @@ def _(mo):
 
 
 @app.cell
-def _(
-    MultitaskGPModel,
-    Path,
-    device,
-    gpytorch,
-    load_dataset,
-    torch,
-    tqdm,
-):
+def _(MultitaskGPModel, Path, device, gpytorch, load_dataset, torch, tqdm):
     def train_mtgp(dataset_name):
         print(f"\n{'='*50}")
         print(f"TRAINING PHASE: {dataset_name.upper()} Dataset")
@@ -180,7 +172,7 @@ def _(
         _ARTIFACT_DIR = Path('artifacts')
         _ARTIFACT_DIR.mkdir(exist_ok=True)
         _ckpt_path = _ARTIFACT_DIR / f'multitask_gp_{dataset_name.lower()}.pt'
-        
+
         # Validates checkpoint is robust (has all required keys)
         if _ckpt_path.exists():
             try:
@@ -255,6 +247,7 @@ def _(
     mo,
     np,
     plt,
+    sns,
     torch,
 ):
     def plot_predictions(y_act, y_pred, lower_denorm, upper_denorm, dataset_name):
@@ -290,17 +283,17 @@ def _(
     def plot_binned_metrics(y_act, y_pred, dataset_name):
         import pandas as pd
         import matplotlib.ticker as ticker
-        
+
         # 1. Spacing (discrete -> direct absolute errors)
         y_true_spacing = y_act[:, 0]
         y_pred_spacing = y_pred[:, 0]
         abs_errors_spacing = np.abs(y_pred_spacing - y_true_spacing)
-        
+
         df_spacing = pd.DataFrame({
             'Spectral Spacing (GHz)': y_true_spacing,
             'Absolute Error': abs_errors_spacing
         })
-            
+
         fig1, ax1 = plt.subplots(figsize=(7, 4))
         sns.boxplot(data=df_spacing, x='Spectral Spacing (GHz)', y='Absolute Error', color='white', width=0.5, ax=ax1, showfliers=False)
         sns.stripplot(data=df_spacing, x='Spectral Spacing (GHz)', y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax1)
@@ -310,34 +303,34 @@ def _(
         ax1.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
         fig1.tight_layout()
         ui_ax1 = mo.ui.matplotlib(ax1)
-        
+
         # 2. OSNR (continuous -> binned labels for seaborn)
         y_true_osnr = y_act[:, 1]
         y_pred_osnr = y_pred[:, 1]
         abs_errors_osnr = np.abs(y_true_osnr - y_pred_osnr)
-        
+
         num_bins = 10
         bins = np.linspace(np.min(y_true_osnr), np.max(y_true_osnr), num_bins + 1)
         # Create string labels for the bins reflecting their center, formatted to 1 decimal place
         bin_centers = (bins[:-1] + bins[1:]) / 2
         bin_labels = [f"{c:.1f}" for c in bin_centers]
-        
+
         # Digitize returns indices 1 to len(bins)-1. Subtract 1 for 0-based.
         indices = np.digitize(y_true_osnr, bins) - 1
         indices = np.clip(indices, 0, num_bins - 1)
-        
+
         # Map indices to their corresponding center label
         osnr_bin_labels = [bin_labels[i] for i in indices]
-        
+
         df_osnr = pd.DataFrame({
             'OSNR (dB)': osnr_bin_labels,
             'Absolute Error': abs_errors_osnr
         })
-        
+
         # Sort the dataframe by the numeric value of the bins to keep them ordered on x-axis
         df_osnr['sort_key'] = df_osnr['OSNR (dB)'].astype(float)
         df_osnr = df_osnr.sort_values('sort_key').drop('sort_key', axis=1)
-                
+
         fig2, ax2 = plt.subplots(figsize=(7, 4))
         sns.boxplot(data=df_osnr, x='OSNR (dB)', y='Absolute Error', color='white', width=0.5, ax=ax2, showfliers=False)
         sns.stripplot(data=df_osnr, x='OSNR (dB)', y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax2)
@@ -347,7 +340,7 @@ def _(
         ax2.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
         fig2.tight_layout()
         ui_ax2 = mo.ui.matplotlib(ax2)
-        
+
         return mo.hstack([ui_ax1, ui_ax2], justify="center")
 
     def evaluate_mtgp(dataset_name):
@@ -373,10 +366,10 @@ def _(
 
         likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=test_y.shape[1]).to(device)
         model = MultitaskGPModel(train_x_fit, train_y_fit, likelihood).to(device)
-        
+
         likelihood.load_state_dict(ckpt['likelihood_state_dict'])
         model.load_state_dict(ckpt['model_state_dict'])
-        
+
         model.eval()
         likelihood.eval()
 
@@ -414,7 +407,7 @@ def _(
         # Generating interactive plots
         plots1 = plot_predictions(y_actual_denorm, y_pred_denorm, lower_denorm, upper_denorm, dataset_name)
         plots2 = plot_binned_metrics(y_actual_denorm, y_pred_denorm, dataset_name)
-        
+
         # Displaying structured output
         return mo.vstack([
             metrics_table,
@@ -424,21 +417,28 @@ def _(
             plots2
         ])
 
-    return evaluate_mtgp, plot_binned_metrics, plot_predictions
+    return (evaluate_mtgp,)
 
 
 @app.cell
 def _(evaluate_mtgp):
     # Call evaluation for FCM
+    evaluate_mtgp("fcm")
     # If this fails, ensure you have run the training cells above!
-    return evaluate_mtgp("fcm")
+    return
 
 
 @app.cell
 def _(evaluate_mtgp):
     # Call evaluation for GKM
+    evaluate_mtgp("gkm")
     # If this fails, ensure you have run the training cells above!
-    return evaluate_mtgp("gkm")
+    return
+
+
+@app.cell
+def _():
+    return
 
 
 if __name__ == "__main__":

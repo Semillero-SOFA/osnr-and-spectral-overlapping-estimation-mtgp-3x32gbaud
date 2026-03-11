@@ -272,6 +272,7 @@ def _(
     mo,
     np,
     plt,
+    sns,
     ticker,
     torch,
 ):
@@ -307,7 +308,7 @@ def _(
 
     def plot_binned_metrics(y_act, y_pred, title_suffix):
         import pandas as pd
-        
+
         # 1. Spacing (discrete -> direct absolute errors)
         y_true_spacing = y_act[:, 0]
         y_pred_spacing = y_pred[:, 0]
@@ -338,11 +339,11 @@ def _(
         # Create string labels for the bins reflecting their center, formatted to 1 decimal place
         bin_centers = (bins[:-1] + bins[1:]) / 2
         bin_labels = [f"{c:.1f}" for c in bin_centers]
-        
+
         # Digitize returns indices 1 to len(bins)-1. Subtract 1 for 0-based.
         indices = np.digitize(y_true_osnr, bins) - 1
         indices = np.clip(indices, 0, num_bins - 1)
-        
+
         # Map indices to their corresponding center label
         osnr_bin_labels = [bin_labels[i] for i in indices]
 

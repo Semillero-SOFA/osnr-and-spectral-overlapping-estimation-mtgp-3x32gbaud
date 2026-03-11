@@ -23,9 +23,9 @@ app = marimo.App()
 def _(mo):
     mo.md(r"""
     # General Gaussian Process: Training and Evaluation
-    
+
     This notebook evaluates single-output Exact Gaussian Process (GP) models against the dataset. This explicitly drops the "multitask" nature of the MTGP.
-    
+
     We train 4 specific configurations per dataset (FCM/GKM):
     1.  **OSNR ONLY:** Predicts OSNR using only the 16 features.
     2.  **OSNR + SPACING:** Predicts OSNR using the 16 features + the True Spacing.
@@ -89,37 +89,37 @@ def _(Path, StandardScaler, np, torch, train_test_split):
         scaler_x = StandardScaler()
         X_train_norm = scaler_x.fit_transform(X_train)
         X_test_norm = scaler_x.transform(X_test)
-        
+
         # We need individual standardizers for Y because these are single-output GPs now
         # Targets: [0: Spacing, 1: OSNR]
         y_mean_spacing = Y_train[:, 0].mean(axis=0)
         y_std_spacing = Y_train[:, 0].std(axis=0) + 1e-6
         Y_train_spacing_std = (Y_train[:, 0] - y_mean_spacing) / y_std_spacing
         Y_test_spacing_std = (Y_test[:, 0] - y_mean_spacing) / y_std_spacing
-        
+
         y_mean_osnr = Y_train[:, 1].mean(axis=0)
         y_std_osnr = Y_train[:, 1].std(axis=0) + 1e-6
         Y_train_osnr_std = (Y_train[:, 1] - y_mean_osnr) / y_std_osnr
         Y_test_osnr_std = (Y_test[:, 1] - y_mean_osnr) / y_std_osnr
-        
+
         # For +OSNR/+Spacing features we need those un-standardized target values accessible.
         # Actually, if we append them as features, we should standardize them alongside X.
         # Let's create augmented feature sets:
-        
+
         # 16 + True Spacing
         X_train_plus_spacing = np.column_stack((X_train, Y_train[:, 0]))
         X_test_plus_spacing = np.column_stack((X_test, Y_test[:, 0]))
         scaler_x_plus_spacing = StandardScaler()
         X_train_plus_spacing_norm = scaler_x_plus_spacing.fit_transform(X_train_plus_spacing)
         X_test_plus_spacing_norm = scaler_x_plus_spacing.transform(X_test_plus_spacing)
-        
+
         # 16 + True OSNR
         X_train_plus_osnr = np.column_stack((X_train, Y_train[:, 1]))
         X_test_plus_osnr = np.column_stack((X_test, Y_test[:, 1]))
         scaler_x_plus_osnr = StandardScaler()
         X_train_plus_osnr_norm = scaler_x_plus_osnr.fit_transform(X_train_plus_osnr)
         X_test_plus_osnr_norm = scaler_x_plus_osnr.transform(X_test_plus_osnr)
-        
+
         return {
             'x_norm': (torch.tensor(X_train_norm, dtype=torch.float32), torch.tensor(X_test_norm, dtype=torch.float32)),
             'x_plus_spacing_norm': (torch.tensor(X_train_plus_spacing_norm, dtype=torch.float32), torch.tensor(X_test_plus_spacing_norm, dtype=torch.float32)),
@@ -164,29 +164,21 @@ def _(np, torch):
     np.random.seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    return SEED, device
+    return (device,)
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Training Logic
-    
+
     We define a reusable loop that takes a specific config tag (e.g. `osnr_only`, `osnr_plus_spacing`) and trains the exact GP.
     """)
     return
 
 
 @app.cell
-def _(
-    ExactGPModel,
-    Path,
-    device,
-    gpytorch,
-    load_dataset_gp,
-    torch,
-    tqdm,
-):
+def _(ExactGPModel, Path, device, gpytorch, torch, tqdm):
     def train_gp_config(dataset_name, config_name, train_x, train_y, scalars):
         print(f"\n{'='*50}")
         print(f"TRAINING PHASE: {dataset_name.upper()} | {config_name}")
@@ -210,7 +202,7 @@ def _(
         _ARTIFACT_DIR = Path('artifacts')
         _ARTIFACT_DIR.mkdir(exist_ok=True)
         _ckpt_path = _ARTIFACT_DIR / f'gp_{config_name}_{dataset_name.lower()}.pt'
-        
+
         if _ckpt_path.exists():
             try:
                 ckpt = torch.load(_ckpt_path, map_location="cpu", weights_only=False)
@@ -253,16 +245,16 @@ def _(load_dataset_gp, train_gp_config):
     def run_training_suite(dataset_name):
         data_path = f"processed_data/{dataset_name.lower()}"
         data = load_dataset_gp(data_path)
-        
+
         x_tr, _ = data['x_norm']
         x_plus_sp_tr, _ = data['x_plus_spacing_norm']
         x_plus_osnr_tr, _ = data['x_plus_osnr_norm']
-        
+
         y_sp_tr, _ = data['y_spacing_std']
         y_osnr_tr, _ = data['y_osnr_std']
-        
+
         sc = data['scalars']
-        
+
         # 1. OSNR ONLY
         train_gp_config(dataset_name, 'osnr_only', x_tr, y_osnr_tr, sc)
         # 2. OSNR + SPACING
@@ -271,9 +263,10 @@ def _(load_dataset_gp, train_gp_config):
         train_gp_config(dataset_name, 'spacing_only', x_tr, y_sp_tr, sc)
         # 4. SPACING + OSNR
         train_gp_config(dataset_name, 'spacing_plus_osnr', x_plus_osnr_tr, y_sp_tr, sc)
-        
+
         return "Training Suite Complete."
-        
+
+
     return (run_training_suite,)
 
 
@@ -293,7 +286,7 @@ def _(run_training_suite):
 def _(mo):
     mo.md(r"""
     ## Evaluation & Plotting Logic
-    
+
     We evaluate the models one-by-one and plot them using the matched Seaborn styles mimicking `02_General_MTGP_Training_Evaluation.py`.
     """)
     return
@@ -323,10 +316,10 @@ def _(
 
         likelihood = gpytorch.likelihoods.GaussianLikelihood().to(device)
         model = ExactGPModel(train_x_fit, train_y_fit, likelihood).to(device)
-        
+
         likelihood.load_state_dict(ckpt['likelihood_state_dict'])
         model.load_state_dict(ckpt['model_state_dict'])
-        
+
         model.eval()
         likelihood.eval()
 
@@ -349,9 +342,9 @@ def _(
         # Precision plotting
         import pandas as pd
         import matplotlib.ticker as ticker
-        
+
         abs_errors = np.abs(y_pred_denorm - y_actual_denorm)
-        
+
         fig1, ax1 = plt.subplots(figsize=(7, 5))
         sort_indices = np.argsort(y_actual_denorm)
         x_range = np.arange(len(sort_indices))
@@ -377,11 +370,11 @@ def _(
             indices = np.digitize(y_actual_denorm, bins) - 1
             indices = np.clip(indices, 0, num_bins - 1)
             mapped_labels = [bin_labels[i] for i in indices]
-            
+
             df = pd.DataFrame({target_label: mapped_labels, 'Absolute Error': abs_errors})
             df['sort_key'] = df[target_label].astype(float)
             df = df.sort_values('sort_key').drop('sort_key', axis=1)
-            
+
             sns.boxplot(data=df, x=target_label, y='Absolute Error', color='white', width=0.5, ax=ax2, showfliers=False)
             sns.stripplot(data=df, x=target_label, y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax2)
 
@@ -403,20 +396,20 @@ def _(
     def evaluate_all_gps(dataset_name):
         data_path = f"processed_data/{dataset_name.lower()}"
         data = load_dataset_gp(data_path)
-        
+
         _, x_te = data['x_norm']
         _, x_plus_sp_te = data['x_plus_spacing_norm']
         _, x_plus_osnr_te = data['x_plus_osnr_norm']
-        
+
         _, y_sp_te = data['y_spacing_std']
         _, y_osnr_te = data['y_osnr_std']
-        
+
         sc = data['scalars']
         y_mean_osnr = sc['mean_osnr']
         y_std_osnr = sc['std_osnr']
         y_mean_sp = sc['mean_spacing']
         y_std_sp = sc['std_spacing']
-        
+
         # OSNR Only
         ui_o_only, m_o_only = evaluate_gp_config(dataset_name, 'osnr_only', x_te, y_osnr_te.cpu().numpy(), y_mean_osnr, y_std_osnr, 'OSNR (dB)')
         # OSNR + Spacing
@@ -425,10 +418,10 @@ def _(
         ui_s_only, m_s_only = evaluate_gp_config(dataset_name, 'spacing_only', x_te, y_sp_te.cpu().numpy(), y_mean_sp, y_std_sp, 'Spectral Spacing (GHz)')
         # Spacing + OSNR
         ui_s_o, m_s_o = evaluate_gp_config(dataset_name, 'spacing_plus_osnr', x_plus_osnr_te, y_sp_te.cpu().numpy(), y_mean_sp, y_std_sp, 'Spectral Spacing (GHz)')
-        
+
         table = mo.md(f"""
         ## Comparison Metrics ({dataset_name.upper()})
-        
+
         | Configuration | MAE | RMSE |
         |---|---|---|
         | **OSNR ONLY** | `{m_o_only['mae']:.4f}` | `{m_o_only['rmse']:.4f}` |
@@ -436,7 +429,7 @@ def _(
         | **SPACING ONLY** | `{m_s_only['mae']:.4f}` | `{m_s_only['rmse']:.4f}` |
         | **SPACING + OSNR** | `{m_s_o['mae']:.4f}` | `{m_s_o['rmse']:.4f}` |
         """)
-        
+
         return mo.vstack([
             mo.md(f"# {dataset_name.upper()} Independent GP Evaluations"),
             table,
@@ -447,21 +440,21 @@ def _(
             mo.md("---")
         ])
 
-    return evaluate_all_gps, evaluate_gp_config
+    return (evaluate_all_gps,)
 
 
 @app.cell
 def _(evaluate_all_gps):
     fcm_report = evaluate_all_gps("fcm")
     fcm_report
-    return (fcm_report,)
+    return
 
 
 @app.cell
 def _(evaluate_all_gps):
     gkm_report = evaluate_all_gps("gkm")
     gkm_report
-    return (gkm_report,)
+    return
 
 
 if __name__ == "__main__":
