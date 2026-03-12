@@ -60,3 +60,6 @@ agent/
 # Output configurations
 configs/
 *.png
+
+# Paper documents
+paper/
