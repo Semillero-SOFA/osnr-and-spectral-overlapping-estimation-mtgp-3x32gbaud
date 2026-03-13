@@ -7,6 +7,7 @@
 #     "numpy>=2.1.0",
 #     "pyzmq>=26.0.0",
 #     "scikit-learn>=1.5.0",
+#     "seaborn>=0.13.2",
 #     "torch>=2.1.0",
 #     "tqdm>=4.66.0",
 # ]
@@ -41,27 +42,40 @@ def _():
     import numpy as np
     import torch
     import gpytorch
-    import matplotlib.pyplot as plt
-    import matplotlib.ticker as ticker
-    from tqdm.notebook import tqdm
     from pathlib import Path
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import train_test_split
     import marimo as mo
-    import seaborn as sns
+
+    from utils import (
+        set_seed, get_device,
+        MultitaskGPModel,
+        fit_mtgp, run_inference,
+        validate_checkpoint, save_checkpoint, MTGP_REQUIRED_KEYS,
+        denormalize, compute_metrics_multitask,
+        plot_predictions_multitask, plot_violin_multitask,
+    )
 
     return (
+        MultitaskGPModel,
         Path,
         StandardScaler,
+        compute_metrics_multitask,
+        denormalize,
+        fit_mtgp,
+        get_device,
         gpytorch,
         mo,
         np,
-        plt,
-        sns,
-        ticker,
+        plot_predictions_multitask,
+        plot_violin_multitask,
+        run_inference,
+        save_checkpoint,
+        set_seed,
         torch,
-        tqdm,
         train_test_split,
+        validate_checkpoint,
+        MTGP_REQUIRED_KEYS,
     )
 
 
@@ -120,32 +134,9 @@ def _(Path, StandardScaler, np, torch, train_test_split):
 
 
 @app.cell
-def _(gpytorch):
-    class MultitaskGPModel(gpytorch.models.ExactGP):
-        def __init__(self, train_x, train_y, likelihood):
-            super().__init__(train_x, train_y, likelihood)
-            self.mean_module = gpytorch.means.MultitaskMean(
-                gpytorch.means.ConstantMean(), num_tasks=train_y.shape[1]
-            )
-            self.covar_module = gpytorch.kernels.MultitaskKernel(
-                gpytorch.kernels.RBFKernel(), num_tasks=train_y.shape[1], rank=1
-            )
-
-        def forward(self, x):
-            mean_x = self.mean_module(x)
-            covar_x = self.covar_module(x)
-            return gpytorch.distributions.MultitaskMultivariateNormal(mean_x, covar_x)
-
-    return (MultitaskGPModel,)
-
-
-@app.cell
-def _(np, torch):
-    SEED = 42
-    torch.manual_seed(SEED)
-    np.random.seed(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+def _(set_seed, get_device):
+    set_seed()
+    device = get_device()
     return (device,)
 
 
@@ -161,13 +152,13 @@ def _(mo):
 
 @app.cell
 def _(
-    MultitaskGPModel,
     Path,
     device,
-    gpytorch,
+    fit_mtgp,
     load_scenario_dataset,
-    torch,
-    tqdm,
+    save_checkpoint,
+    validate_checkpoint,
+    MTGP_REQUIRED_KEYS,
 ):
     def train_scenario_mtgp(dataset_name, dist, pwr):
         print(f"\n{'='*50}")
@@ -177,68 +168,39 @@ def _(
         data_path = f"processed_data/{dataset_name.lower()}"
         train_x, train_y, test_x, test_y, scaler_x, y_mean, y_std = load_scenario_dataset(data_path, dist, pwr)
 
-        train_x = train_x.to(device)
-        train_y = train_y.to(device)
-
-        max_train_points = 5000
-        if train_x.size(0) > max_train_points:
-            sel = torch.randperm(train_x.size(0))[:max_train_points]
-            train_x_fit = train_x[sel]
-            train_y_fit = train_y[sel]
-        else:
-            train_x_fit = train_x
-            train_y_fit = train_y
-
-        likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=train_y.shape[1]).to(device)
-        model = MultitaskGPModel(train_x_fit, train_y_fit, likelihood).to(device)
-
         _ARTIFACT_DIR = Path('artifacts')
         _ARTIFACT_DIR.mkdir(exist_ok=True)
         ckpt_name = f'mtgp_{dataset_name.lower()}_{dist}km_{pwr}dbm.pt'
         _ckpt_path = _ARTIFACT_DIR / ckpt_name
 
-        if _ckpt_path.exists():
-            try:
-                ckpt = torch.load(_ckpt_path, map_location="cpu", weights_only=False)
-                required_keys = {'model_state_dict', 'likelihood_state_dict', 'train_x_fit', 'train_y_fit', 'scaler_x', 'y_mean', 'y_std'}
-                if required_keys.issubset(ckpt.keys()):
-                    print(f'Valid checkpoint found at {_ckpt_path}. Skipping training.')
-                    return
-            except Exception as e:
-                print(f"Error reading checkpoint: {e}. Retraining...")
+        if validate_checkpoint(_ckpt_path, MTGP_REQUIRED_KEYS):
+            print(f'Valid checkpoint found at {_ckpt_path}. Skipping training.')
+            return
 
-        model.train()
-        likelihood.train()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-        mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, model)
+        model, likelihood = fit_mtgp(
+            train_x, train_y, device,
+            desc=f"Training {ckpt_name}",
+        )
 
-        print(f"Training Model ({ckpt_name})...")
-        training_iterations = 200 # Adjust as needed
-        for i in tqdm(range(training_iterations), desc=f"Training {ckpt_name}"):
-            optimizer.zero_grad()
-            output = model(train_x_fit)
-            loss = -mll(output, train_y_fit)
-            loss.backward()
-            optimizer.step()
+        train_x_fit = model.train_inputs[0]
+        train_y_fit = model.train_targets
 
-        checkpoint = {
+        save_checkpoint(_ckpt_path, {
             'model_state_dict': model.state_dict(),
             'likelihood_state_dict': likelihood.state_dict(),
             'train_x_fit': train_x_fit,
             'train_y_fit': train_y_fit,
             'scaler_x': scaler_x,
             'y_mean': y_mean,
-            'y_std': y_std
-        }
-        torch.save(checkpoint, _ckpt_path)
-        print(f'Training complete. Checkpoint saved to {_ckpt_path}')
+            'y_std': y_std,
+        })
 
     return (train_scenario_mtgp,)
 
 
 @app.cell
 def _(train_scenario_mtgp):
-    # Train FMC Models
+    # Train FCM Models
     train_scenario_mtgp("fcm", 0, 0)
     train_scenario_mtgp("fcm", 270, 0)
     train_scenario_mtgp("fcm", 270, 9)
@@ -266,119 +228,27 @@ def _(mo):
 def _(
     MultitaskGPModel,
     Path,
+    compute_metrics_multitask,
+    denormalize,
     device,
     gpytorch,
     load_scenario_dataset,
     mo,
     np,
-    plt,
-    sns,
-    ticker,
+    plot_predictions_multitask,
+    plot_violin_multitask,
+    run_inference,
     torch,
 ):
-    def plot_predictions(y_act, y_pred, lower_denorm, upper_denorm, title_suffix):
-        sort_indices_spacing = np.argsort(y_act[:, 0])
-        sort_indices_osnr = np.argsort(y_act[:, 1])
-
-        # Spacing Plot
-        fig1, ax1 = plt.subplots(figsize=(7, 5))
-        x_spacing = np.arange(len(sort_indices_spacing))
-        ax1.plot(x_spacing, y_act[sort_indices_spacing, 0], 'k.', label='True', alpha=0.7)
-        ax1.plot(x_spacing, y_pred[sort_indices_spacing, 0], 'b-', label='Predicted', linewidth=2)
-        ax1.fill_between(x_spacing, lower_denorm[sort_indices_spacing, 0], upper_denorm[sort_indices_spacing, 0], alpha=0.3, label='95% CI')
-        ax1.set_ylabel('Spectral Spacing (GHz)')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        fig1.tight_layout()
-        ui_ax1 = mo.ui.matplotlib(ax1)
-
-        # OSNR Plot
-        fig2, ax2 = plt.subplots(figsize=(7, 5))
-        x_osnr = np.arange(len(sort_indices_osnr))
-        ax2.plot(x_osnr, y_act[sort_indices_osnr, 1], 'k.', label='True', alpha=0.7)
-        ax2.plot(x_osnr, y_pred[sort_indices_osnr, 1], 'b-', label='Predicted', linewidth=2)
-        ax2.fill_between(x_osnr, lower_denorm[sort_indices_osnr, 1], upper_denorm[sort_indices_osnr, 1], alpha=0.3, label='95% CI')
-        ax2.set_ylabel('OSNR (dB)')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        fig2.tight_layout()
-        ui_ax2 = mo.ui.matplotlib(ax2)
-
-        return mo.hstack([ui_ax1, ui_ax2], justify="center")
-
-    def plot_binned_metrics(y_act, y_pred, title_suffix):
-        import pandas as pd
-
-        # 1. Spacing (discrete -> direct absolute errors)
-        y_true_spacing = y_act[:, 0]
-        y_pred_spacing = y_pred[:, 0]
-        abs_errors_spacing = np.abs(y_pred_spacing - y_true_spacing)
-
-        df_spacing = pd.DataFrame({
-            'Spectral Spacing (GHz)': y_true_spacing,
-            'Absolute Error': abs_errors_spacing
-        })
-
-        fig1, ax1 = plt.subplots(figsize=(7, 4))
-        sns.boxplot(data=df_spacing, x='Spectral Spacing (GHz)', y='Absolute Error', color='white', width=0.5, ax=ax1, showfliers=False)
-        sns.stripplot(data=df_spacing, x='Spectral Spacing (GHz)', y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax1)
-        ax1.set_ylabel('Absolute Error')
-        ax1.grid(True, which='both', alpha=0.3, axis='y')
-        ax1.yaxis.set_major_locator(ticker.MultipleLocator(0.5))
-        ax1.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
-        fig1.tight_layout()
-        ui_ax1 = mo.ui.matplotlib(ax1)
-
-        # 2. OSNR (continuous -> binned labels for seaborn)
-        y_true_osnr = y_act[:, 1]
-        y_pred_osnr = y_pred[:, 1]
-        abs_errors_osnr = np.abs(y_true_osnr - y_pred_osnr)
-
-        num_bins = 10
-        bins = np.linspace(np.min(y_true_osnr), np.max(y_true_osnr), num_bins + 1)
-        # Create string labels for the bins reflecting their center, formatted to 1 decimal place
-        bin_centers = (bins[:-1] + bins[1:]) / 2
-        bin_labels = [f"{c:.1f}" for c in bin_centers]
-
-        # Digitize returns indices 1 to len(bins)-1. Subtract 1 for 0-based.
-        indices = np.digitize(y_true_osnr, bins) - 1
-        indices = np.clip(indices, 0, num_bins - 1)
-
-        # Map indices to their corresponding center label
-        osnr_bin_labels = [bin_labels[i] for i in indices]
-
-        df_osnr = pd.DataFrame({
-            'OSNR (dB)': osnr_bin_labels,
-            'Absolute Error': abs_errors_osnr
-        })
-
-        # Sort the dataframe by the numeric value of the bins to keep them ordered on x-axis
-        df_osnr['sort_key'] = df_osnr['OSNR (dB)'].astype(float)
-        df_osnr = df_osnr.sort_values('sort_key').drop('sort_key', axis=1)
-
-        fig2, ax2 = plt.subplots(figsize=(7, 4))
-        sns.boxplot(data=df_osnr, x='OSNR (dB)', y='Absolute Error', color='white', width=0.5, ax=ax2, showfliers=False)
-        sns.stripplot(data=df_osnr, x='OSNR (dB)', y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax2)
-        ax2.set_ylabel('Absolute Error')
-        ax2.grid(True, which='both', alpha=0.3, axis='y')
-        ax2.yaxis.set_major_locator(ticker.MultipleLocator(0.5))
-        ax2.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
-        fig2.tight_layout()
-        ui_ax2 = mo.ui.matplotlib(ax2)
-
-        return mo.hstack([ui_ax1, ui_ax2], justify="center")
-
     def evaluate_scenario_mtgp(dataset_name, dist, pwr):
         data_path = f"processed_data/{dataset_name.lower()}"
         _, _, test_x, test_y, _, _, _ = load_scenario_dataset(data_path, dist, pwr)
-        test_x = test_x.to(device)
-        test_y = test_y.to(device)
 
         ckpt_name = f'mtgp_{dataset_name.lower()}_{dist}km_{pwr}dbm.pt'
         _ckpt_path = Path('artifacts') / ckpt_name
 
         if not _ckpt_path.exists():
-            return mo.md(f"**Error:** Model checkpoint {ckpt_name} not found."), None, None
+            return mo.md(f"**Error:** Model checkpoint {ckpt_name} not found."), None
 
         ckpt = torch.load(_ckpt_path, map_location=device, weights_only=False)
         train_x_fit = ckpt['train_x_fit'].to(device)
@@ -388,32 +258,23 @@ def _(
 
         likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=test_y.shape[1]).to(device)
         model = MultitaskGPModel(train_x_fit, train_y_fit, likelihood).to(device)
-
         likelihood.load_state_dict(ckpt['likelihood_state_dict'])
         model.load_state_dict(ckpt['model_state_dict'])
 
-        model.eval()
-        likelihood.eval()
-
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            observed_pred = likelihood(model(test_x))
-            mean = observed_pred.mean.cpu().numpy()
-            lower, upper = observed_pred.confidence_region()
-            lower = lower.cpu().numpy()
-            upper = upper.cpu().numpy()
+        mean, lower, upper = run_inference(model, likelihood, test_x, device)
 
         test_y_np = test_y.cpu().numpy()
-        y_pred_denorm = mean * y_std + y_mean
-        y_actual_denorm = test_y_np * y_std + y_mean
-        lower_denorm = lower * y_std + y_mean
-        upper_denorm = upper * y_std + y_mean
+        y_pred_denorm = denormalize(mean, y_mean, y_std)
+        y_actual_denorm = denormalize(test_y_np, y_mean, y_std)
+        lower_denorm = denormalize(lower, y_mean, y_std)
+        upper_denorm = denormalize(upper, y_mean, y_std)
 
-        mae = np.mean(np.abs(y_pred_denorm - y_actual_denorm), axis=0)
-        rmse = np.sqrt(np.mean((y_pred_denorm - y_actual_denorm) ** 2, axis=0))
+        mae, rmse = compute_metrics_multitask(y_pred_denorm, y_actual_denorm)
 
-        title_suffix = f"({dataset_name.upper()} | {dist}km | {pwr}dBm)"
-        plots1 = plot_predictions(y_actual_denorm, y_pred_denorm, lower_denorm, upper_denorm, title_suffix)
-        plots2 = plot_binned_metrics(y_actual_denorm, y_pred_denorm, title_suffix)
+        ax_sp, ax_osnr = plot_predictions_multitask(
+            y_actual_denorm, y_pred_denorm, lower_denorm, upper_denorm
+        )
+        ax_v_sp, ax_v_osnr = plot_violin_multitask(y_actual_denorm, y_pred_denorm)
 
         metrics = {"mae": mae.tolist(), "rmse": rmse.tolist()}
 
@@ -426,9 +287,9 @@ def _(
             | **OSNR (dB)** | `{mae[1]:.4f}` | `{rmse[1]:.4f}` |
             """),
             mo.md("#### Predictions and Confidence Intervals"),
-            plots1,
-            mo.md("#### Precision Analysis (Binned MAE)"),
-            plots2,
+            mo.hstack([mo.ui.matplotlib(ax_sp), mo.ui.matplotlib(ax_osnr)], justify="center"),
+            mo.md("#### Precision Analysis (Violin)"),
+            mo.hstack([mo.ui.matplotlib(ax_v_sp), mo.ui.matplotlib(ax_v_osnr)], justify="center"),
             mo.md("---")
         ])
 

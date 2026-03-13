@@ -7,6 +7,7 @@
 #     "numpy>=2.1.0",
 #     "pyzmq>=26.0.0",
 #     "scikit-learn>=1.5.0",
+#     "seaborn>=0.13.2",
 #     "torch>=2.1.0",
 #     "tqdm>=4.66.0",
 # ]
@@ -38,25 +39,40 @@ def _():
     import numpy as np
     import torch
     import gpytorch
-    import matplotlib.pyplot as plt
-    from tqdm.notebook import tqdm
     from pathlib import Path
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import train_test_split
     import marimo as mo
-    import seaborn as sns
+
+    from utils import (
+        set_seed, get_device,
+        MultitaskGPModel,
+        fit_mtgp, run_inference,
+        validate_checkpoint, save_checkpoint, MTGP_REQUIRED_KEYS,
+        denormalize, compute_metrics_multitask,
+        plot_predictions_multitask, plot_violin_multitask,
+    )
 
     return (
+        MTGP_REQUIRED_KEYS,
+        MultitaskGPModel,
         Path,
         StandardScaler,
+        compute_metrics_multitask,
+        denormalize,
+        fit_mtgp,
+        get_device,
         gpytorch,
         mo,
         np,
-        plt,
-        sns,
+        plot_predictions_multitask,
+        plot_violin_multitask,
+        run_inference,
+        save_checkpoint,
+        set_seed,
         torch,
-        tqdm,
         train_test_split,
+        validate_checkpoint,
     )
 
 
@@ -105,32 +121,9 @@ def _(Path, StandardScaler, np, torch, train_test_split):
 
 
 @app.cell
-def _(gpytorch):
-    class MultitaskGPModel(gpytorch.models.ExactGP):
-        def __init__(self, train_x, train_y, likelihood):
-            super().__init__(train_x, train_y, likelihood)
-            self.mean_module = gpytorch.means.MultitaskMean(
-                gpytorch.means.ConstantMean(), num_tasks=train_y.shape[1]
-            )
-            self.covar_module = gpytorch.kernels.MultitaskKernel(
-                gpytorch.kernels.RBFKernel(), num_tasks=train_y.shape[1], rank=1
-            )
-
-        def forward(self, x):
-            mean_x = self.mean_module(x)
-            covar_x = self.covar_module(x)
-            return gpytorch.distributions.MultitaskMultivariateNormal(mean_x, covar_x)
-
-    return (MultitaskGPModel,)
-
-
-@app.cell
-def _(np, torch):
-    SEED = 42
-    torch.manual_seed(SEED)
-    np.random.seed(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+def _(get_device, set_seed):
+    set_seed()
+    device = get_device()
     return (device,)
 
 
@@ -145,7 +138,15 @@ def _(mo):
 
 
 @app.cell
-def _(MultitaskGPModel, Path, device, gpytorch, load_dataset, torch, tqdm):
+def _(
+    MTGP_REQUIRED_KEYS,
+    Path,
+    device,
+    fit_mtgp,
+    load_dataset,
+    save_checkpoint,
+    validate_checkpoint,
+):
     def train_mtgp(dataset_name):
         print(f"\n{'='*50}")
         print(f"TRAINING PHASE: {dataset_name.upper()} Dataset")
@@ -154,61 +155,32 @@ def _(MultitaskGPModel, Path, device, gpytorch, load_dataset, torch, tqdm):
         data_path = f"processed_data/{dataset_name.lower()}"
         train_x, train_y, test_x, test_y, scaler_x, y_mean, y_std = load_dataset(data_path)
 
-        train_x = train_x.to(device)
-        train_y = train_y.to(device)
-
-        max_train_points = 5000
-        if train_x.size(0) > max_train_points:
-            sel = torch.randperm(train_x.size(0))[:max_train_points]
-            train_x_fit = train_x[sel]
-            train_y_fit = train_y[sel]
-        else:
-            train_x_fit = train_x
-            train_y_fit = train_y
-
-        likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=train_y.shape[1]).to(device)
-        model = MultitaskGPModel(train_x_fit, train_y_fit, likelihood).to(device)
-
         _ARTIFACT_DIR = Path('artifacts')
         _ARTIFACT_DIR.mkdir(exist_ok=True)
         _ckpt_path = _ARTIFACT_DIR / f'multitask_gp_{dataset_name.lower()}.pt'
 
-        # Validates checkpoint is robust (has all required keys)
-        if _ckpt_path.exists():
-            try:
-                ckpt = torch.load(_ckpt_path, map_location="cpu", weights_only=False)
-                required_keys = {'model_state_dict', 'likelihood_state_dict', 'train_x_fit', 'train_y_fit', 'scaler_x', 'y_mean', 'y_std'}
-                if required_keys.issubset(ckpt.keys()):
-                    print(f'Valid checkpoint found at {_ckpt_path}. Skipping training.')
-                    return
-            except Exception as e:
-                print(f"Error reading checkpoint: {e}. Retraining...")
+        if validate_checkpoint(_ckpt_path, MTGP_REQUIRED_KEYS):
+            print(f'Valid checkpoint found at {_ckpt_path}. Skipping training.')
+            return
 
-        model.train()
-        likelihood.train()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-        mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, model)
+        model, likelihood = fit_mtgp(
+            train_x, train_y, device,
+            desc=f"Training {dataset_name.upper()}",
+        )
 
-        print(f"Training Model ({dataset_name.upper()})...")
-        training_iterations = 200 # Adjust as needed
-        for i in tqdm(range(training_iterations), desc=f"Training {dataset_name}"):
-            optimizer.zero_grad()
-            output = model(train_x_fit)
-            loss = -mll(output, train_y_fit)
-            loss.backward()
-            optimizer.step()
+        # Retrieve the (possibly sub-sampled) training data from the model
+        train_x_fit = model.train_inputs[0]
+        train_y_fit = model.train_targets
 
-        checkpoint = {
+        save_checkpoint(_ckpt_path, {
             'model_state_dict': model.state_dict(),
             'likelihood_state_dict': likelihood.state_dict(),
             'train_x_fit': train_x_fit,
             'train_y_fit': train_y_fit,
             'scaler_x': scaler_x,
             'y_mean': y_mean,
-            'y_std': y_std
-        }
-        torch.save(checkpoint, _ckpt_path)
-        print(f'Training complete. Checkpoint saved to {_ckpt_path}')
+            'y_std': y_std,
+        })
 
     return (train_mtgp,)
 
@@ -232,7 +204,7 @@ def _(mo):
 
     The `evaluate_mtgp` function restores the saved model checkpoint, runs inference on the test set, and visualizes the predictions using two routines:
     1. Overall raw prediction scatter plots with 95% CI (English labels).
-    2. Binned MAE and STD precision plots across the true labels (English labels).
+    2. Violin precision plots across the true labels (English labels).
     """)
     return
 
@@ -241,108 +213,17 @@ def _(mo):
 def _(
     MultitaskGPModel,
     Path,
+    compute_metrics_multitask,
+    denormalize,
     device,
     gpytorch,
     load_dataset,
     mo,
-    np,
-    plt,
-    sns,
+    plot_predictions_multitask,
+    plot_violin_multitask,
+    run_inference,
     torch,
 ):
-    def plot_predictions(y_act, y_pred, lower_denorm, upper_denorm, dataset_name):
-        sort_indices_spacing = np.argsort(y_act[:, 0])
-        sort_indices_osnr = np.argsort(y_act[:, 1])
-
-        # Spacing Plot
-        fig1, ax1 = plt.subplots(figsize=(7, 5))
-        x_spacing = np.arange(len(sort_indices_spacing))
-        ax1.plot(x_spacing, y_act[sort_indices_spacing, 0], 'k.', label='True', alpha=0.7)
-        ax1.plot(x_spacing, y_pred[sort_indices_spacing, 0], 'b-', label='Predicted', linewidth=2)
-        ax1.fill_between(x_spacing, lower_denorm[sort_indices_spacing, 0], upper_denorm[sort_indices_spacing, 0], alpha=0.3, label='95% CI')
-        ax1.set_ylabel('Spectral Spacing (GHz)')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        fig1.tight_layout()
-        ui_ax1 = mo.ui.matplotlib(ax1)
-
-        # OSNR Plot
-        fig2, ax2 = plt.subplots(figsize=(7, 5))
-        x_osnr = np.arange(len(sort_indices_osnr))
-        ax2.plot(x_osnr, y_act[sort_indices_osnr, 1], 'k.', label='True', alpha=0.7)
-        ax2.plot(x_osnr, y_pred[sort_indices_osnr, 1], 'b-', label='Predicted', linewidth=2)
-        ax2.fill_between(x_osnr, lower_denorm[sort_indices_osnr, 1], upper_denorm[sort_indices_osnr, 1], alpha=0.3, label='95% CI')
-        ax2.set_ylabel('OSNR (dB)')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        fig2.tight_layout()
-        ui_ax2 = mo.ui.matplotlib(ax2)
-
-        return mo.hstack([ui_ax1, ui_ax2], justify="center")
-
-    def plot_binned_metrics(y_act, y_pred, dataset_name):
-        import pandas as pd
-        import matplotlib.ticker as ticker
-
-        # 1. Spacing (discrete -> direct absolute errors)
-        y_true_spacing = y_act[:, 0]
-        y_pred_spacing = y_pred[:, 0]
-        abs_errors_spacing = np.abs(y_pred_spacing - y_true_spacing)
-
-        df_spacing = pd.DataFrame({
-            'Spectral Spacing (GHz)': y_true_spacing,
-            'Absolute Error': abs_errors_spacing
-        })
-
-        fig1, ax1 = plt.subplots(figsize=(7, 4))
-        sns.boxplot(data=df_spacing, x='Spectral Spacing (GHz)', y='Absolute Error', color='white', width=0.5, ax=ax1, showfliers=False)
-        sns.stripplot(data=df_spacing, x='Spectral Spacing (GHz)', y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax1)
-        ax1.set_ylabel('Absolute Error')
-        ax1.grid(True, which='both', alpha=0.3, axis='y')
-        ax1.yaxis.set_major_locator(ticker.MultipleLocator(0.5))
-        ax1.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
-        fig1.tight_layout()
-        ui_ax1 = mo.ui.matplotlib(ax1)
-
-        # 2. OSNR (continuous -> binned labels for seaborn)
-        y_true_osnr = y_act[:, 1]
-        y_pred_osnr = y_pred[:, 1]
-        abs_errors_osnr = np.abs(y_true_osnr - y_pred_osnr)
-
-        num_bins = 10
-        bins = np.linspace(np.min(y_true_osnr), np.max(y_true_osnr), num_bins + 1)
-        # Create string labels for the bins reflecting their center, formatted to 1 decimal place
-        bin_centers = (bins[:-1] + bins[1:]) / 2
-        bin_labels = [f"{c:.1f}" for c in bin_centers]
-
-        # Digitize returns indices 1 to len(bins)-1. Subtract 1 for 0-based.
-        indices = np.digitize(y_true_osnr, bins) - 1
-        indices = np.clip(indices, 0, num_bins - 1)
-
-        # Map indices to their corresponding center label
-        osnr_bin_labels = [bin_labels[i] for i in indices]
-
-        df_osnr = pd.DataFrame({
-            'OSNR (dB)': osnr_bin_labels,
-            'Absolute Error': abs_errors_osnr
-        })
-
-        # Sort the dataframe by the numeric value of the bins to keep them ordered on x-axis
-        df_osnr['sort_key'] = df_osnr['OSNR (dB)'].astype(float)
-        df_osnr = df_osnr.sort_values('sort_key').drop('sort_key', axis=1)
-
-        fig2, ax2 = plt.subplots(figsize=(7, 4))
-        sns.boxplot(data=df_osnr, x='OSNR (dB)', y='Absolute Error', color='white', width=0.5, ax=ax2, showfliers=False)
-        sns.stripplot(data=df_osnr, x='OSNR (dB)', y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax2)
-        ax2.set_ylabel('Absolute Error')
-        ax2.grid(True, which='both', alpha=0.3, axis='y')
-        ax2.yaxis.set_major_locator(ticker.MultipleLocator(0.5))
-        ax2.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
-        fig2.tight_layout()
-        ui_ax2 = mo.ui.matplotlib(ax2)
-
-        return mo.hstack([ui_ax1, ui_ax2], justify="center")
-
     def evaluate_mtgp(dataset_name):
         print(f"\n{'='*50}")
         print(f"EVALUATION PHASE: {dataset_name.upper()} Dataset")
@@ -350,12 +231,10 @@ def _(
 
         data_path = f"processed_data/{dataset_name.lower()}"
         _, _, test_x, test_y, _, _, _ = load_dataset(data_path)
-        test_x = test_x.to(device)
-        test_y = test_y.to(device)
 
         _ckpt_path = Path('artifacts') / f'multitask_gp_{dataset_name.lower()}.pt'
         if not _ckpt_path.exists():
-            print(f"Error: Model checkpoint {_ckpt_path} not found. Ensure training is complete first.")
+            print(f"Error: Model checkpoint {_ckpt_path} not found.")
             return None
 
         ckpt = torch.load(_ckpt_path, map_location=device, weights_only=False)
@@ -366,35 +245,24 @@ def _(
 
         likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=test_y.shape[1]).to(device)
         model = MultitaskGPModel(train_x_fit, train_y_fit, likelihood).to(device)
-
         likelihood.load_state_dict(ckpt['likelihood_state_dict'])
         model.load_state_dict(ckpt['model_state_dict'])
 
-        model.eval()
-        likelihood.eval()
-
         print("Running inference on test dataset...")
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            observed_pred = likelihood(model(test_x))
-            mean = observed_pred.mean.cpu().numpy()
-            lower, upper = observed_pred.confidence_region()
-            lower = lower.cpu().numpy()
-            upper = upper.cpu().numpy()
+        mean, lower, upper = run_inference(model, likelihood, test_x, device)
 
         test_y_np = test_y.cpu().numpy()
-        y_pred_denorm = mean * y_std + y_mean
-        y_actual_denorm = test_y_np * y_std + y_mean
-        lower_denorm = lower * y_std + y_mean
-        upper_denorm = upper * y_std + y_mean
+        y_pred_denorm = denormalize(mean, y_mean, y_std)
+        y_actual_denorm = denormalize(test_y_np, y_mean, y_std)
+        lower_denorm = denormalize(lower, y_mean, y_std)
+        upper_denorm = denormalize(upper, y_mean, y_std)
 
-        mae = np.mean(np.abs(y_pred_denorm - y_actual_denorm), axis=0)
-        rmse = np.sqrt(np.mean((y_pred_denorm - y_actual_denorm) ** 2, axis=0))
+        mae, rmse = compute_metrics_multitask(y_pred_denorm, y_actual_denorm)
 
         print(f'\nMetrics ({dataset_name.upper()}):')
         print(f'MAE  - Spacing: {mae[0]:.3f} GHz | OSNR: {mae[1]:.3f} dB')
         print(f'RMSE - Spacing: {rmse[0]:.3f} GHz | OSNR: {rmse[1]:.3f} dB')
 
-        # Formatting metrics table
         metrics_table = mo.md(f"""
         ### Performance Metrics ({dataset_name.upper()})
         ---
@@ -404,17 +272,17 @@ def _(
         | **OSNR (dB)** | `{mae[1]:.4f}` | `{rmse[1]:.4f}` |
         """)
 
-        # Generating interactive plots
-        plots1 = plot_predictions(y_actual_denorm, y_pred_denorm, lower_denorm, upper_denorm, dataset_name)
-        plots2 = plot_binned_metrics(y_actual_denorm, y_pred_denorm, dataset_name)
+        ax_sp, ax_osnr = plot_predictions_multitask(
+            y_actual_denorm, y_pred_denorm, lower_denorm, upper_denorm
+        )
+        ax_v_sp, ax_v_osnr = plot_violin_multitask(y_actual_denorm, y_pred_denorm)
 
-        # Displaying structured output
         return mo.vstack([
             metrics_table,
             mo.md("#### Predictions and Confidence Intervals"),
-            plots1,
-            mo.md("#### Precision Analysis (Binned MAE)"),
-            plots2
+            mo.hstack([mo.ui.matplotlib(ax_sp), mo.ui.matplotlib(ax_osnr)], justify="center"),
+            mo.md("#### Precision Analysis (Violin)"),
+            mo.hstack([mo.ui.matplotlib(ax_v_sp), mo.ui.matplotlib(ax_v_osnr)], justify="center"),
         ])
 
     return (evaluate_mtgp,)
@@ -422,17 +290,13 @@ def _(
 
 @app.cell
 def _(evaluate_mtgp):
-    # Call evaluation for FCM
     evaluate_mtgp("fcm")
-    # If this fails, ensure you have run the training cells above!
     return
 
 
 @app.cell
 def _(evaluate_mtgp):
-    # Call evaluation for GKM
     evaluate_mtgp("gkm")
-    # If this fails, ensure you have run the training cells above!
     return
 
 

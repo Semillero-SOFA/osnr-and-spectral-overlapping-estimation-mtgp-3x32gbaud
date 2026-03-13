@@ -40,25 +40,40 @@ def _():
     import numpy as np
     import torch
     import gpytorch
-    import matplotlib.pyplot as plt
-    from tqdm.notebook import tqdm
     from pathlib import Path
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import train_test_split
     import marimo as mo
-    import seaborn as sns
+
+    from utils import (
+        set_seed, get_device,
+        ExactGPModel,
+        fit_gp, run_inference,
+        validate_checkpoint, save_checkpoint, GP_REQUIRED_KEYS,
+        denormalize, compute_metrics_single,
+        plot_predictions_single, plot_violin_single,
+    )
 
     return (
+        ExactGPModel,
         Path,
         StandardScaler,
+        compute_metrics_single,
+        denormalize,
+        fit_gp,
+        get_device,
         gpytorch,
         mo,
         np,
-        plt,
-        sns,
+        plot_predictions_single,
+        plot_violin_single,
+        run_inference,
+        save_checkpoint,
+        set_seed,
         torch,
-        tqdm,
         train_test_split,
+        validate_checkpoint,
+        GP_REQUIRED_KEYS,
     )
 
 
@@ -90,8 +105,7 @@ def _(Path, StandardScaler, np, torch, train_test_split):
         X_train_norm = scaler_x.fit_transform(X_train)
         X_test_norm = scaler_x.transform(X_test)
 
-        # We need individual standardizers for Y because these are single-output GPs now
-        # Targets: [0: Spacing, 1: OSNR]
+        # Individual per-output standardization
         y_mean_spacing = Y_train[:, 0].mean(axis=0)
         y_std_spacing = Y_train[:, 0].std(axis=0) + 1e-6
         Y_train_spacing_std = (Y_train[:, 0] - y_mean_spacing) / y_std_spacing
@@ -102,11 +116,7 @@ def _(Path, StandardScaler, np, torch, train_test_split):
         Y_train_osnr_std = (Y_train[:, 1] - y_mean_osnr) / y_std_osnr
         Y_test_osnr_std = (Y_test[:, 1] - y_mean_osnr) / y_std_osnr
 
-        # For +OSNR/+Spacing features we need those un-standardized target values accessible.
-        # Actually, if we append them as features, we should standardize them alongside X.
-        # Let's create augmented feature sets:
-
-        # 16 + True Spacing
+        # Augmented feature sets: 16 + True Spacing
         X_train_plus_spacing = np.column_stack((X_train, Y_train[:, 0]))
         X_test_plus_spacing = np.column_stack((X_test, Y_test[:, 0]))
         scaler_x_plus_spacing = StandardScaler()
@@ -142,28 +152,9 @@ def _(Path, StandardScaler, np, torch, train_test_split):
 
 
 @app.cell
-def _(gpytorch):
-    class ExactGPModel(gpytorch.models.ExactGP):
-        def __init__(self, train_x, train_y, likelihood):
-            super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
-            self.mean_module = gpytorch.means.ConstantMean()
-            self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
-
-        def forward(self, x):
-            mean_x = self.mean_module(x)
-            covar_x = self.covar_module(x)
-            return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
-
-    return (ExactGPModel,)
-
-
-@app.cell
-def _(np, torch):
-    SEED = 42
-    torch.manual_seed(SEED)
-    np.random.seed(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+def _(set_seed, get_device):
+    set_seed()
+    device = get_device()
     return (device,)
 
 
@@ -178,64 +169,42 @@ def _(mo):
 
 
 @app.cell
-def _(ExactGPModel, Path, device, gpytorch, torch, tqdm):
+def _(
+    Path,
+    device,
+    fit_gp,
+    save_checkpoint,
+    validate_checkpoint,
+    GP_REQUIRED_KEYS,
+):
     def train_gp_config(dataset_name, config_name, train_x, train_y, scalars):
         print(f"\n{'='*50}")
         print(f"TRAINING PHASE: {dataset_name.upper()} | {config_name}")
         print(f"{'='*50}")
 
-        train_x = train_x.to(device)
-        train_y = train_y.to(device)
-
-        max_train_points = 5000
-        if train_x.size(0) > max_train_points:
-            sel = torch.randperm(train_x.size(0))[:max_train_points]
-            train_x_fit = train_x[sel]
-            train_y_fit = train_y[sel]
-        else:
-            train_x_fit = train_x
-            train_y_fit = train_y
-
-        likelihood = gpytorch.likelihoods.GaussianLikelihood().to(device)
-        model = ExactGPModel(train_x_fit, train_y_fit, likelihood).to(device)
-
         _ARTIFACT_DIR = Path('artifacts')
         _ARTIFACT_DIR.mkdir(exist_ok=True)
         _ckpt_path = _ARTIFACT_DIR / f'gp_{config_name}_{dataset_name.lower()}.pt'
 
-        if _ckpt_path.exists():
-            try:
-                ckpt = torch.load(_ckpt_path, map_location="cpu", weights_only=False)
-                required_keys = {'model_state_dict', 'likelihood_state_dict'}
-                if required_keys.issubset(ckpt.keys()):
-                    print(f'Valid checkpoint found at {_ckpt_path}. Skipping training.')
-                    return
-            except Exception as e:
-                print(f"Error reading checkpoint: {e}. Retraining...")
+        if validate_checkpoint(_ckpt_path, GP_REQUIRED_KEYS):
+            print(f'Valid checkpoint found at {_ckpt_path}. Skipping training.')
+            return
 
-        model.train()
-        likelihood.train()
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-        mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, model)
+        model, likelihood = fit_gp(
+            train_x, train_y, device,
+            desc=f"Training {config_name}",
+        )
 
-        print(f"Training Model ({config_name})...")
-        training_iterations = 200 # Adjust as needed
-        for i in tqdm(range(training_iterations), desc=f"Training {config_name}"):
-            optimizer.zero_grad()
-            output = model(train_x_fit)
-            loss = -mll(output, train_y_fit)
-            loss.backward()
-            optimizer.step()
+        train_x_fit = model.train_inputs[0]
+        train_y_fit = model.train_targets
 
-        checkpoint = {
+        save_checkpoint(_ckpt_path, {
             'model_state_dict': model.state_dict(),
             'likelihood_state_dict': likelihood.state_dict(),
             'train_x_fit': train_x_fit,
             'train_y_fit': train_y_fit,
-            'scalars': scalars
-        }
-        torch.save(checkpoint, _ckpt_path)
-        print(f'Training complete. Checkpoint saved to {_ckpt_path}')
+            'scalars': scalars,
+        })
 
     return (train_gp_config,)
 
@@ -266,7 +235,6 @@ def _(load_dataset_gp, train_gp_config):
 
         return "Training Suite Complete."
 
-
     return (run_training_suite,)
 
 
@@ -287,7 +255,7 @@ def _(mo):
     mo.md(r"""
     ## Evaluation & Plotting Logic
 
-    We evaluate the models one-by-one and plot them using the matched Seaborn styles mimicking `02_General_MTGP_Training_Evaluation.py`.
+    We evaluate the models one-by-one and plot them using violin plots for precision analysis.
     """)
     return
 
@@ -296,13 +264,15 @@ def _(mo):
 def _(
     ExactGPModel,
     Path,
+    compute_metrics_single,
+    denormalize,
     device,
     gpytorch,
     load_dataset_gp,
     mo,
-    np,
-    plt,
-    sns,
+    plot_predictions_single,
+    plot_violin_single,
+    run_inference,
     torch,
 ):
     def evaluate_gp_config(dataset_name, config_name, test_x, test_y, y_mean, y_std, target_label):
@@ -316,79 +286,25 @@ def _(
 
         likelihood = gpytorch.likelihoods.GaussianLikelihood().to(device)
         model = ExactGPModel(train_x_fit, train_y_fit, likelihood).to(device)
-
         likelihood.load_state_dict(ckpt['likelihood_state_dict'])
         model.load_state_dict(ckpt['model_state_dict'])
 
-        model.eval()
-        likelihood.eval()
+        mean, lower, upper = run_inference(model, likelihood, test_x, device)
 
-        test_x = test_x.to(device)
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            observed_pred = likelihood(model(test_x))
-            mean = observed_pred.mean.cpu().numpy()
-            lower, upper = observed_pred.confidence_region()
-            lower = lower.cpu().numpy()
-            upper = upper.cpu().numpy()
+        y_pred_denorm = denormalize(mean, y_mean, y_std)
+        y_actual_denorm = denormalize(test_y, y_mean, y_std)
+        lower_denorm = denormalize(lower, y_mean, y_std)
+        upper_denorm = denormalize(upper, y_mean, y_std)
 
-        y_pred_denorm = mean * y_std + y_mean
-        y_actual_denorm = test_y * y_std + y_mean
-        lower_denorm = lower * y_std + y_mean
-        upper_denorm = upper * y_std + y_mean
+        mae, rmse = compute_metrics_single(y_pred_denorm, y_actual_denorm)
 
-        mae = np.mean(np.abs(y_pred_denorm - y_actual_denorm))
-        rmse = np.sqrt(np.mean((y_pred_denorm - y_actual_denorm) ** 2))
-
-        # Precision plotting
-        import pandas as pd
-        import matplotlib.ticker as ticker
-
-        abs_errors = np.abs(y_pred_denorm - y_actual_denorm)
-
-        fig1, ax1 = plt.subplots(figsize=(7, 5))
-        sort_indices = np.argsort(y_actual_denorm)
-        x_range = np.arange(len(sort_indices))
-        ax1.plot(x_range, y_actual_denorm[sort_indices], 'k.', label='True', alpha=0.7)
-        ax1.plot(x_range, y_pred_denorm[sort_indices], 'b-', label='Predicted', linewidth=2)
-        ax1.fill_between(x_range, lower_denorm[sort_indices], upper_denorm[sort_indices], alpha=0.3, label='95% CI')
-        ax1.set_ylabel(target_label)
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        fig1.tight_layout()
-        ui_ax1 = mo.ui.matplotlib(ax1)
-
-        fig2, ax2 = plt.subplots(figsize=(7, 4))
-        if 'Spacing' in target_label:
-            df = pd.DataFrame({target_label: y_actual_denorm, 'Absolute Error': abs_errors})
-            sns.boxplot(data=df, x=target_label, y='Absolute Error', color='white', width=0.5, ax=ax2, showfliers=False)
-            sns.stripplot(data=df, x=target_label, y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax2)
-        else:
-            num_bins = 10
-            bins = np.linspace(np.min(y_actual_denorm), np.max(y_actual_denorm), num_bins + 1)
-            bin_centers = (bins[:-1] + bins[1:]) / 2
-            bin_labels = [f"{c:.1f}" for c in bin_centers]
-            indices = np.digitize(y_actual_denorm, bins) - 1
-            indices = np.clip(indices, 0, num_bins - 1)
-            mapped_labels = [bin_labels[i] for i in indices]
-
-            df = pd.DataFrame({target_label: mapped_labels, 'Absolute Error': abs_errors})
-            df['sort_key'] = df[target_label].astype(float)
-            df = df.sort_values('sort_key').drop('sort_key', axis=1)
-
-            sns.boxplot(data=df, x=target_label, y='Absolute Error', color='white', width=0.5, ax=ax2, showfliers=False)
-            sns.stripplot(data=df, x=target_label, y='Absolute Error', color='black', alpha=0.3, size=3, jitter=True, ax=ax2)
-
-        ax2.set_ylabel('Absolute Error')
-        ax2.grid(True, which='both', alpha=0.3, axis='y')
-        ax2.yaxis.set_major_locator(ticker.MultipleLocator(0.5))
-        ax2.yaxis.set_minor_locator(ticker.MultipleLocator(0.1))
-        fig2.tight_layout()
-        ui_ax2 = mo.ui.matplotlib(ax2)
+        ax_pred = plot_predictions_single(y_actual_denorm, y_pred_denorm, lower_denorm, upper_denorm, target_label)
+        ax_violin = plot_violin_single(y_actual_denorm, y_pred_denorm, target_label)
 
         ui_component = mo.vstack([
             mo.md(f"### {config_name.upper()}"),
             mo.md(f"**MAE:** `{mae:.4f}` | **RMSE:** `{rmse:.4f}`"),
-            mo.hstack([ui_ax1, ui_ax2])
+            mo.hstack([mo.ui.matplotlib(ax_pred), mo.ui.matplotlib(ax_violin)])
         ])
 
         return ui_component, {'mae': mae, 'rmse': rmse}
