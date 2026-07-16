@@ -56,6 +56,7 @@ def _():
 
     return (
         ExactGPModel,
+        GP_REQUIRED_KEYS,
         Path,
         StandardScaler,
         compute_metrics_single,
@@ -73,7 +74,6 @@ def _():
         torch,
         train_test_split,
         validate_checkpoint,
-        GP_REQUIRED_KEYS,
     )
 
 
@@ -152,7 +152,7 @@ def _(Path, StandardScaler, np, torch, train_test_split):
 
 
 @app.cell
-def _(set_seed, get_device):
+def _(get_device, set_seed):
     set_seed()
     device = get_device()
     return (device,)
@@ -170,12 +170,12 @@ def _(mo):
 
 @app.cell
 def _(
+    GP_REQUIRED_KEYS,
     Path,
     device,
     fit_gp,
     save_checkpoint,
     validate_checkpoint,
-    GP_REQUIRED_KEYS,
 ):
     def train_gp_config(dataset_name, config_name, train_x, train_y, scalars):
         print(f"\n{'='*50}")

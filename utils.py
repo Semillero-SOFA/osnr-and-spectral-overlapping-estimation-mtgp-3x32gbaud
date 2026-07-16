@@ -553,7 +553,7 @@ def plot_comparison_overlaid(
 
     ax.set_ylabel(target_label)
     ax.set_xlabel("Test Samples (Sorted by True Value)")
-    ax.legend(loc="upper left", bbox_to_anchor=(1, 1))
+    ax.legend(loc="upper left")
     ax.grid(True, alpha=0.3)
     
     if axs is None:
@@ -566,7 +566,7 @@ def plot_comparison_violins(
     target_idx: int,
     target_label: str,
     axs: plt.Axes | None = None,
-    num_bins_osnr: int = 10,
+    num_bins: int = 6,
 ) -> plt.Axes:
     """Create a grouped violin plot for multiple models' metrics."""
     if axs is None:
@@ -586,35 +586,37 @@ def plot_comparison_violins(
             
         abs_err = np.abs(y_pred - y_act)
         
-        if "Spacing" in target_label:
-            df = pd.DataFrame({
-                "Bin": y_act,
-                "Absolute Error": abs_err,
-                "Method": name
-            })
-        else:
-            # OSNR Binning
-            bins = np.linspace(y_act.min(), y_act.max(), num_bins_osnr + 1)
-            bin_centers = (bins[:-1] + bins[1:]) / 2
-            bin_labels = [f"{c:.1f}" for c in bin_centers]
-            indices = np.clip(np.digitize(y_act, bins) - 1, 0, num_bins_osnr - 1)
-            df = pd.DataFrame({
-                "Bin": [bin_labels[i] for i in indices],
-                "Absolute Error": abs_err,
-                "Method": name,
-                "sort_key": [bin_centers[i] for i in indices]
-            })
+        # Consistent Binning for all targets
+        bins = np.linspace(y_act.min(), y_act.max(), num_bins + 1)
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+        bin_labels = [f"{c:.1f}" for c in bin_centers]
+        indices = np.clip(np.digitize(y_act, bins) - 1, 0, num_bins - 1)
+        
+        df = pd.DataFrame({
+            "Bin": [bin_labels[i] for i in indices],
+            "Absolute Error": abs_err,
+            "Method": name,
+            "sort_key": [bin_centers[i] for i in indices]
+        })
             
         all_dfs.append(df)
 
     big_df = pd.concat(all_dfs, ignore_index=True)
-    if "OSNR" in target_label:
-        big_df = big_df.sort_values("sort_key")
+    big_df = big_df.sort_values("sort_key")
+
+    keys = list(results_dict.keys())
+    custom_colors = {
+        "MTGP": "#0d4d2e",
+        "STGP": "#d4e8dc",
+        "GP": "#4d7558",
+    }
+    palette = {k: custom_colors.get(k, sns.color_palette("muted")[i % 10]) for i, k in enumerate(keys)}
 
     sns.violinplot(
         data=big_df, x="Bin", y="Absolute Error", hue="Method",
+        hue_order=keys,
         inner="box", linewidth=1, width=0.8, ax=ax,
-        palette="muted", split=False
+        palette=palette, split=False
     )
     
     ax.set_xlabel(target_label)
